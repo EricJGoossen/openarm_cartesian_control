@@ -1,0 +1,9 @@
+<library path="openarm_cartesian_control">
+  <class name="openarm_cartesian_control/OpenArmCartesianController"
+         type="openarm_cartesian_control::OpenArmCartesianController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Cartesian impedance controller for OpenArm with gravity compensation.
+    </description>
+  </class>
+</library>
