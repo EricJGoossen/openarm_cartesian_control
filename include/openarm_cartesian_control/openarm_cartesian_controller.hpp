@@ -13,10 +13,16 @@
 #include "rclcpp/node_interfaces/node_parameters_interface.hpp"
 #include "cartesian_control_msgs/action/follow_cartesian_trajectory.hpp"
 #include "cartesian_control_msgs/msg/cartesian_trajectory.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "eigen3/Eigen/Core"
 #include "eigen3/Eigen/Geometry"
 
 #include "openarm_cartesian_control/cartesian_impedance.hpp"
+#include "openarm_cartesian_control/impedance_gains.hpp"
+#include "openarm_cartesian_control/mount_motion.hpp"
+#include "openarm_cartesian_control/pose_command_ref.hpp"
 
 namespace openarm_cartesian_control {
 
@@ -48,10 +54,17 @@ class OpenArmCartesianController : public controller_interface::ControllerInterf
   std::vector<std::string> joint_names_;
   std::optional<CartesianImpedance> impedance_controller_;
 
-  // Trajectory tracking 
+  enum class CommandSource { ACTION, TOPIC };
+
+  // Trajectory tracking (action mode)
   using CartesianTrajectory = cartesian_control_msgs::msg::CartesianTrajectory;
   realtime_tools::RealtimeBuffer<std::shared_ptr<CartesianTrajectory>> trajectory_buffer_;
   rclcpp::Time trajectory_start_time_;
+
+  // Pose command from topic (topic mode)
+  CommandSource command_source_{CommandSource::ACTION};
+  realtime_tools::RealtimeBuffer<PoseCommandRef> pose_command_buffer_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_command_sub_;
 
   // Current Cartesian reference 
   Eigen::Vector3d    x_ref_pos_;
@@ -76,8 +89,27 @@ class OpenArmCartesianController : public controller_interface::ControllerInterf
 
   // Parameter callback 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
+  realtime_tools::RealtimeBuffer<ImpedanceGains> impedance_gains_buffer_;
 
-  // Helpers 
+  // Mount motion from external IMU / odom
+  realtime_tools::RealtimeBuffer<MountMotion> mount_motion_buffer_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  Eigen::Quaterniond imu_to_mount_rotation_{Eigen::Quaterniond::Identity()};
+
+  void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
+  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void poseCommandCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  static CommandSource parseCommandSource(const std::string& value);
+  MountMotion readMountMotionFromRT() const;
+  ImpedanceGains readImpedanceGainsFromRT() const;
+  void applyImpedanceGains(const ImpedanceGains& gains);
+  static bool validateGainVector(
+      const std::vector<double>& gains,
+      const char* param_name,
+      std::string& reason);
+
+  // Helpers
   void interpolateTrajectory(
       const CartesianTrajectory& traj, const rclcpp::Time& time);
   void updateFeedback();

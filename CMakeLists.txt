@@ -12,6 +12,8 @@ find_package(controller_interface REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(cartesian_control_msgs REQUIRED)
 find_package(openarm_hardware REQUIRED)
 find_package(urdf REQUIRED)
@@ -39,6 +41,8 @@ ament_target_dependencies(openarm_cartesian_control
   hardware_interface
   pluginlib
   geometry_msgs
+  sensor_msgs
+  nav_msgs
   cartesian_control_msgs
   openarm_hardware
   urdf

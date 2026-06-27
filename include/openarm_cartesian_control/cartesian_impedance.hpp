@@ -9,6 +9,11 @@
 #include "pinocchio/multibody/model.hpp"
 #include "pinocchio/multibody/data.hpp"
 
+#include "openarm_cartesian_control/impedance_gains.hpp"
+#include "openarm_cartesian_control/mount_motion.hpp"
+
+#include <array>
+
 namespace openarm_cartesian_control {
 
 class CartesianImpedance {
@@ -31,15 +36,18 @@ class CartesianImpedance {
   void initFK(const Eigen::VectorXd& q);
   void setStiffness(const std::vector<double>& k_gains);
   void setDamping(const std::vector<double>& d_gains);
+  void setStiffness(const std::array<double, kCartesianImpedanceDoF>& k_gains);
+  void setDamping(const std::array<double, kCartesianImpedanceDoF>& d_gains);
 
   Eigen::VectorXd computeControl(
       const Eigen::VectorXd& q,
       const Eigen::VectorXd& dq,
+      const MountMotion& mount,
       const Eigen::Vector3d& x_ref_pos,
       const Eigen::Quaterniond& x_ref_quat,
       const Eigen::Vector3d& x_ref_linvel,
       const Eigen::Vector3d& x_ref_angvel);
-    
+
  private:
   // Limits
   const std::vector<double> cartesian_position_lower_limits_;
@@ -64,6 +72,13 @@ class CartesianImpedance {
   // Cached EE pose 
   Eigen::Vector3d    last_pos_;
   Eigen::Quaterniond last_quat_;
+
+  Eigen::VectorXd computeBiasTorques(
+      const Eigen::VectorXd& q,
+      const Eigen::VectorXd& dq,
+      const MountMotion& mount);
+
+  void applyMountGravity(const MountMotion& mount);
 
   // Helper functions
   void clamp(Eigen::Ref<Eigen::VectorXd> v, const std::vector<double>& limits);

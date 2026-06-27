@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <cmath>
+#include <array>
 
 namespace openarm_cartesian_control {
 
@@ -79,17 +80,59 @@ void CartesianImpedance::initFK(const Eigen::VectorXd& q) {
   last_quat_ = Eigen::Quaterniond(oMf.rotation());
 }
 
-void CartesianImpedance::setStiffness(const std::vector<double>& k_gains) {
+void CartesianImpedance::setStiffness(const std::array<double, kCartesianImpedanceDoF>& k_gains) {
   K_ = Eigen::Map<const Eigen::Matrix<double, 6, 1>>(k_gains.data()).asDiagonal();
 }
 
-void CartesianImpedance::setDamping(const std::vector<double>& d_gains) {
+void CartesianImpedance::setDamping(const std::array<double, kCartesianImpedanceDoF>& d_gains) {
   D_ = Eigen::Map<const Eigen::Matrix<double, 6, 1>>(d_gains.data()).asDiagonal();
+}
+
+void CartesianImpedance::setStiffness(const std::vector<double>& k_gains) {
+  if (k_gains.size() != kCartesianImpedanceDoF) {
+    throw std::invalid_argument(
+        "k_gains must have exactly " + std::to_string(kCartesianImpedanceDoF) + " elements");
+  }
+  setStiffness(std::array<double, kCartesianImpedanceDoF>{
+      k_gains[0], k_gains[1], k_gains[2], k_gains[3], k_gains[4], k_gains[5]});
+}
+
+void CartesianImpedance::setDamping(const std::vector<double>& d_gains) {
+  if (d_gains.size() != kCartesianImpedanceDoF) {
+    throw std::invalid_argument(
+        "d_gains must have exactly " + std::to_string(kCartesianImpedanceDoF) + " elements");
+  }
+  setDamping(std::array<double, kCartesianImpedanceDoF>{
+      d_gains[0], d_gains[1], d_gains[2], d_gains[3], d_gains[4], d_gains[5]});
+}
+
+void CartesianImpedance::applyMountGravity(const MountMotion& mount) {
+  // World gravity expressed in the (possibly moving) arm-mount frame.
+  const Eigen::Vector3d g_world(0.0, 0.0, -9.81);
+  pinocchio_model_.gravity.linear() = mount.orientation.conjugate() * g_world;
+}
+
+Eigen::VectorXd CartesianImpedance::computeBiasTorques(
+    const Eigen::VectorXd& q,
+    const Eigen::VectorXd& /* dq */,
+    const MountMotion& mount) {
+  applyMountGravity(mount);
+
+  // Moving-base bias torques: gravity today; mount twist/accel reserved for
+  // floating-base inverse dynamics once the model includes a free flyer.
+  (void)mount.linear_velocity;
+  (void)mount.angular_velocity;
+  (void)mount.linear_acceleration;
+  (void)mount.angular_acceleration;
+
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(pinocchio_model_.nv);
+  return pinocchio::rnea(pinocchio_model_, pinocchio_data_, q, zero, zero);
 }
 
 Eigen::VectorXd CartesianImpedance::computeControl(
     const Eigen::VectorXd& q,
     const Eigen::VectorXd& dq,
+    const MountMotion& mount,
     const Eigen::Vector3d& x_ref_pos,
     const Eigen::Quaterniond& x_ref_quat,
     const Eigen::Vector3d& x_ref_linvel,
@@ -143,8 +186,7 @@ Eigen::VectorXd CartesianImpedance::computeControl(
   Eigen::VectorXd tau = J.transpose() * F;
 
   if (do_gravity_compensation_) {
-    const Eigen::VectorXd zero = Eigen::VectorXd::Zero(pinocchio_model_.nv);
-    tau += pinocchio::rnea(pinocchio_model_, pinocchio_data_, q, zero, zero);
+    tau += computeBiasTorques(q, dq, mount);
   }
 
   clamp(tau, joint_torque_limits_);

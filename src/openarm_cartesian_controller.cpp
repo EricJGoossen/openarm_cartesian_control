@@ -2,7 +2,22 @@
 
 #include "pluginlib/class_list_macros.hpp"
 
+#include <string>
+#include <algorithm>
+
 namespace openarm_cartesian_control {
+
+namespace {
+
+ImpedanceGains makeImpedanceGains(
+    const std::vector<double>& k_gains, const std::vector<double>& d_gains) {
+  ImpedanceGains gains;
+  std::copy(k_gains.begin(), k_gains.end(), gains.k.begin());
+  std::copy(d_gains.begin(), d_gains.end(), gains.d.begin());
+  return gains;
+}
+
+}  // namespace
 
 // Lifecycle
 
@@ -21,6 +36,11 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_init() {
   auto_declare<std::vector<double>>("k_gains", std::vector<double>(6, 0.0));
   auto_declare<std::vector<double>>("d_gains", std::vector<double>(6, 0.0));
   auto_declare<std::string>("ee_frame_name", "tool0");
+  auto_declare<std::string>("imu_topic", "imu");
+  auto_declare<std::string>("odom_topic", "odom");
+  auto_declare<std::vector<double>>("imu_to_mount_rpy", std::vector<double>{0.0, 0.0, 0.0});
+  auto_declare<std::string>("command_source", "action");
+  auto_declare<std::string>("command_pose_topic", "command_pose");
 
   // Read params
   joint_names_ = get_node()->get_parameter("joints").as_string_array();
@@ -57,11 +77,25 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_init() {
     return CallbackReturn::ERROR;
   }
 
-  // Apply initial gains from params (k_gains=0 means pure gravity comp until set)
-  impedance_controller_->setStiffness(
-      get_node()->get_parameter("k_gains").as_double_array());
-  impedance_controller_->setDamping(
-      get_node()->get_parameter("d_gains").as_double_array());
+  // Seed RT gain buffer from config; update() applies them on the RT thread.
+  const auto k_gains = get_node()->get_parameter("k_gains").as_double_array();
+  const auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
+  std::string gain_error;
+  if (!validateGainVector(k_gains, "k_gains", gain_error) ||
+      !validateGainVector(d_gains, "d_gains", gain_error)) {
+    RCLCPP_ERROR(get_node()->get_logger(), "%s", gain_error.c_str());
+    return CallbackReturn::ERROR;
+  }
+  impedance_gains_buffer_.writeFromNonRT(makeImpedanceGains(k_gains, d_gains));
+
+  const auto imu_to_mount_rpy =
+      get_node()->get_parameter("imu_to_mount_rpy").as_double_array();
+  if (imu_to_mount_rpy.size() == 3) {
+    imu_to_mount_rotation_ =
+        Eigen::AngleAxisd(imu_to_mount_rpy[2], Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(imu_to_mount_rpy[1], Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(imu_to_mount_rpy[0], Eigen::Vector3d::UnitX());
+  }
 
   // Register param callback so gains can be updated at runtime via:
   //   ros2 param set /<controller_name> k_gains "[100,100,100,10,10,10]"
@@ -92,12 +126,18 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_activate(
 
   // Clear stale state from a previous activation
   trajectory_buffer_.writeFromNonRT(nullptr);
+  pose_command_buffer_.writeFromNonRT(PoseCommandRef{});
   feedback_msg_ = std::make_shared<FollowCartesianTrajectoryAction::Feedback>();
   {
     std::lock_guard<std::mutex> lock(goal_mutex_);
     active_goal_.reset();
   }
   feedback_count_ = 0;
+  mount_motion_buffer_.writeFromNonRT(MountMotion{});
+  impedance_gains_buffer_.writeFromNonRT(
+      makeImpedanceGains(
+          get_node()->get_parameter("k_gains").as_double_array(),
+          get_node()->get_parameter("d_gains").as_double_array()));
 
   // Seed FK from current joint positions so the arm holds in place
   // until the first trajectory arrives
@@ -113,7 +153,9 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_activate(
 
   trajectory_start_time_ = get_node()->get_clock()->now();
 
-  RCLCPP_INFO(get_node()->get_logger(), "OpenArm Cartesian Controller activated");
+  RCLCPP_INFO(get_node()->get_logger(),
+      "OpenArm Cartesian Controller activated (command_source=%s)",
+      command_source_ == CommandSource::ACTION ? "action" : "topic");
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -150,6 +192,47 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_configure(
                 this, std::placeholders::_1),
       std::bind(&OpenArmCartesianController::onGoalAccepted,
                 this, std::placeholders::_1));
+
+  const std::string imu_topic = get_node()->get_parameter("imu_topic").as_string();
+  const std::string odom_topic = get_node()->get_parameter("odom_topic").as_string();
+
+  imu_sub_ = get_node()->create_subscription<sensor_msgs::msg::Imu>(
+      imu_topic,
+      rclcpp::SensorDataQoS(),
+      std::bind(&OpenArmCartesianController::imuCallback, this, std::placeholders::_1));
+
+  odom_sub_ = get_node()->create_subscription<nav_msgs::msg::Odometry>(
+      odom_topic,
+      rclcpp::SystemDefaultsQoS(),
+      std::bind(&OpenArmCartesianController::odomCallback, this, std::placeholders::_1));
+
+  const std::string command_source_param =
+      get_node()->get_parameter("command_source").as_string();
+  command_source_ = parseCommandSource(command_source_param);
+  if (command_source_ == CommandSource::ACTION &&
+      command_source_param != "action") {
+    RCLCPP_WARN(get_node()->get_logger(),
+        "Unknown command_source '%s'; defaulting to 'action'",
+        command_source_param.c_str());
+  }
+
+  if (command_source_ == CommandSource::TOPIC) {
+    const std::string pose_topic =
+        get_node()->get_parameter("command_pose_topic").as_string();
+    pose_command_sub_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
+        pose_topic,
+        rclcpp::SystemDefaultsQoS(),
+        std::bind(&OpenArmCartesianController::poseCommandCallback,
+                  this, std::placeholders::_1));
+    RCLCPP_INFO(get_node()->get_logger(),
+        "Pose commands from topic '%s'", pose_topic.c_str());
+  } else {
+    RCLCPP_INFO(get_node()->get_logger(),
+        "Pose commands from follow_cartesian_trajectory action");
+  }
+
+  RCLCPP_INFO(get_node()->get_logger(),
+      "Subscribed to mount IMU '%s' and odom '%s'", imu_topic.c_str(), odom_topic.c_str());
 
   return CallbackReturn::SUCCESS;
 }
@@ -189,16 +272,28 @@ controller_interface::return_type OpenArmCartesianController::update(
     dq[i] = state_interfaces_[i * 2 + 1].get_value();
   }
 
-  // Advance reference pose along trajectory (no-op if no trajectory active)
+  // Advance reference pose from action trajectory or topic command
   auto trajectory_ptr = trajectory_buffer_.readFromRT();
-  const bool trajectory_active = (trajectory_ptr && *trajectory_ptr);
+  const bool trajectory_active =
+      command_source_ == CommandSource::ACTION && trajectory_ptr && *trajectory_ptr;
   if (trajectory_active) {
     interpolateTrajectory(**trajectory_ptr, time);
+  } else if (command_source_ == CommandSource::TOPIC) {
+    if (const PoseCommandRef* ptr = pose_command_buffer_.readFromRT()) {
+      if (ptr->valid) {
+        x_ref_pos_ = ptr->position;
+        x_ref_quat_ = ptr->orientation;
+        x_ref_linvel_.setZero();
+        x_ref_angvel_.setZero();
+      }
+    }
   }
 
-  // Compute impedance + gravity compensation torques and write to hardware
+  // Apply latest gains on the RT thread, then compute torques.
+  applyImpedanceGains(readImpedanceGainsFromRT());
+  const MountMotion mount = readMountMotionFromRT();
   const Eigen::VectorXd torques = impedance_controller_->computeControl(
-      q, dq, x_ref_pos_, x_ref_quat_, x_ref_linvel_, x_ref_angvel_);
+      q, dq, mount, x_ref_pos_, x_ref_quat_, x_ref_linvel_, x_ref_angvel_);
   for (size_t i = 0; i < joint_names_.size(); ++i) {
     (void)command_interfaces_[i].set_value(torques[i]);
   }
@@ -209,7 +304,7 @@ controller_interface::return_type OpenArmCartesianController::update(
     goal = active_goal_;
   }
 
-  if (!trajectory_active || !goal) {
+  if (command_source_ != CommandSource::ACTION || !trajectory_active || !goal) {
     return controller_interface::return_type::OK;
   }
 
@@ -364,6 +459,11 @@ void OpenArmCartesianController::updateFeedback() {
 rclcpp_action::GoalResponse OpenArmCartesianController::onGoalRequest(
     const rclcpp_action::GoalUUID& /* uuid */,
     std::shared_ptr<const FollowCartesianTrajectoryAction::Goal> goal) {
+  if (command_source_ == CommandSource::TOPIC) {
+    RCLCPP_WARN(get_node()->get_logger(),
+        "Rejected trajectory goal: command_source is 'topic'");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   if (goal->trajectory.points.empty()) {
     RCLCPP_WARN(get_node()->get_logger(), "Rejected empty trajectory");
     return rclcpp_action::GoalResponse::REJECT;
@@ -409,14 +509,167 @@ rcl_interfaces::msg::SetParametersResult
 OpenArmCartesianController::onParameterChange(const std::vector<rclcpp::Parameter>& params) {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
+
+  ImpedanceGains gains = readImpedanceGainsFromRT();
+  if (const ImpedanceGains* ptr = impedance_gains_buffer_.readFromNonRT()) {
+    gains = *ptr;
+  }
+
+  bool gains_updated = false;
   for (const auto& p : params) {
     if (p.get_name() == "k_gains") {
-      impedance_controller_->setStiffness(p.as_double_array());
+      std::string reason;
+      const auto values = p.as_double_array();
+      if (!validateGainVector(values, "k_gains", reason)) {
+        result.successful = false;
+        result.reason = reason;
+        return result;
+      }
+      std::copy(values.begin(), values.end(), gains.k.begin());
+      gains_updated = true;
     } else if (p.get_name() == "d_gains") {
-      impedance_controller_->setDamping(p.as_double_array());
+      std::string reason;
+      const auto values = p.as_double_array();
+      if (!validateGainVector(values, "d_gains", reason)) {
+        result.successful = false;
+        result.reason = reason;
+        return result;
+      }
+      std::copy(values.begin(), values.end(), gains.d.begin());
+      gains_updated = true;
     }
   }
+
+  if (gains_updated) {
+    impedance_gains_buffer_.writeFromNonRT(gains);
+    RCLCPP_INFO(get_node()->get_logger(), "Updated impedance gains via rosparam");
+  }
   return result;
+}
+
+bool OpenArmCartesianController::validateGainVector(
+    const std::vector<double>& gains,
+    const char* param_name,
+    std::string& reason) {
+  if (gains.size() != kCartesianImpedanceDoF) {
+    reason = std::string(param_name) + " must have exactly " +
+             std::to_string(kCartesianImpedanceDoF) + " elements [x, y, z, rx, ry, rz]; got " +
+             std::to_string(gains.size());
+    return false;
+  }
+  return true;
+}
+
+ImpedanceGains OpenArmCartesianController::readImpedanceGainsFromRT() const {
+  if (const ImpedanceGains* ptr = impedance_gains_buffer_.readFromRT()) {
+    return *ptr;
+  }
+  return ImpedanceGains{};
+}
+
+void OpenArmCartesianController::applyImpedanceGains(const ImpedanceGains& gains) {
+  impedance_controller_->setStiffness(gains.k);
+  impedance_controller_->setDamping(gains.d);
+}
+
+MountMotion OpenArmCartesianController::readMountMotionFromRT() const {
+  MountMotion mount;
+  if (const MountMotion* ptr = mount_motion_buffer_.readFromRT()) {
+    mount = *ptr;
+  }
+
+  if (!mount.has_imu) {
+    mount.orientation = Eigen::Quaterniond::Identity();
+    mount.angular_velocity.setZero();
+    mount.linear_acceleration.setZero();
+  }
+  if (!mount.has_odom) {
+    mount.linear_velocity.setZero();
+  }
+
+  return mount;
+}
+
+void OpenArmCartesianController::imuCallback(
+    const sensor_msgs::msg::Imu::SharedPtr msg) {
+  MountMotion mount;
+  if (const MountMotion* ptr = mount_motion_buffer_.readFromNonRT()) {
+    mount = *ptr;
+  }
+
+  const Eigen::Quaterniond q_imu(
+      msg->orientation.w, msg->orientation.x,
+      msg->orientation.y, msg->orientation.z);
+  if (q_imu.norm() > 1e-6) {
+    mount.orientation = imu_to_mount_rotation_ * q_imu.normalized();
+  }
+
+  mount.angular_velocity =
+      imu_to_mount_rotation_ * Eigen::Vector3d(
+          msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+  mount.linear_acceleration =
+      imu_to_mount_rotation_ * Eigen::Vector3d(
+          msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+  mount.has_imu = true;
+
+  mount_motion_buffer_.writeFromNonRT(mount);
+}
+
+void OpenArmCartesianController::odomCallback(
+    const nav_msgs::msg::Odometry::SharedPtr msg) {
+  MountMotion mount;
+  if (const MountMotion* ptr = mount_motion_buffer_.readFromNonRT()) {
+    mount = *ptr;
+  }
+
+  mount.linear_velocity =
+      imu_to_mount_rotation_ * Eigen::Vector3d(
+          msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
+
+  if (!mount.has_imu) {
+    const Eigen::Quaterniond q_odom(
+        msg->pose.pose.orientation.w, msg->pose.pose.orientation.x,
+        msg->pose.pose.orientation.y, msg->pose.pose.orientation.z);
+    if (q_odom.norm() > 1e-6) {
+      mount.orientation = imu_to_mount_rotation_ * q_odom.normalized();
+    }
+    mount.angular_velocity =
+        imu_to_mount_rotation_ * Eigen::Vector3d(
+            msg->twist.twist.angular.x, msg->twist.twist.angular.y, msg->twist.twist.angular.z);
+  }
+
+  mount.has_odom = true;
+  mount_motion_buffer_.writeFromNonRT(mount);
+}
+
+OpenArmCartesianController::CommandSource
+OpenArmCartesianController::parseCommandSource(const std::string& value) {
+  if (value == "topic") {
+    return CommandSource::TOPIC;
+  }
+  return CommandSource::ACTION;
+}
+
+void OpenArmCartesianController::poseCommandCallback(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+  PoseCommandRef ref;
+  if (const PoseCommandRef* ptr = pose_command_buffer_.readFromNonRT()) {
+    ref = *ptr;
+  }
+
+  ref.position = Eigen::Vector3d(
+      msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+  ref.orientation = Eigen::Quaterniond(
+      msg->pose.orientation.w, msg->pose.orientation.x,
+      msg->pose.orientation.y, msg->pose.orientation.z);
+  if (ref.orientation.norm() > 1e-6) {
+    ref.orientation.normalize();
+  } else {
+    ref.orientation = Eigen::Quaterniond::Identity();
+  }
+  ref.valid = true;
+
+  pose_command_buffer_.writeFromNonRT(ref);
 }
 
 }  // namespace openarm_cartesian_control

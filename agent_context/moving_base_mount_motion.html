@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Context: openarm_cartesian_control (branch vs main)</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --done: #3fb950;
+      --todo: #d29922;
+      --new: #a371f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.6;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+      background: var(--bg);
+      color: var(--text);
+    }
+    h1 { font-size: 1.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+    h2 { font-size: 1.25rem; margin-top: 2.25rem; color: var(--accent); }
+    h3 { font-size: 1rem; margin-top: 1.25rem; }
+    p, li { color: var(--text); }
+    .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    nav.toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0 2rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+    nav.toc ol { margin: 0.5rem 0 0; padding-left: 1.25rem; }
+    nav.toc a { color: var(--accent); text-decoration: none; }
+    nav.toc a:hover { text-decoration: underline; }
+    .callout {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      padding: 1rem 1.25rem;
+      margin: 1rem 0;
+      border-radius: 4px;
+    }
+    .callout.ok { border-left-color: var(--done); }
+    .callout.warn { border-left-color: var(--todo); }
+    .callout.new { border-left-color: var(--new); }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      font-size: 0.85rem;
+    }
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 1rem;
+      overflow-x: auto;
+      border-radius: 4px;
+    }
+    code { background: var(--surface); padding: 0.15em 0.4em; border-radius: 3px; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.88rem; }
+    th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+    th { background: var(--surface); }
+    ul { padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    .tag {
+      display: inline-block;
+      font-size: 0.75rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+    .tag-done { background: #238636; color: #fff; }
+    .tag-todo { background: #9e6a03; color: #fff; }
+    .tag-new { background: #8957e5; color: #fff; }
+    .delta-main { color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+
+<h1>openarm_cartesian_control — Branch Agent Context</h1>
+<p class="meta">
+  Package: <code>openarm_cartesian_control</code><br>
+  Path: <code>/home/geodude/openarm_cartesian_control</code><br>
+  Baseline: <code>origin/main</code> (last commit: validated trajectory controls)<br>
+  Last updated: 2026-06-27<br>
+  Purpose: Handoff for the next agent — what diverged from main, why, and what is still open.
+</p>
+
+<nav class="toc">
+  <strong>Read this first</strong>
+  <ol>
+    <li><a href="#delta">§1 Delta from main</a> — one-page summary of every change and rationale</li>
+    <li><a href="#principles">§2 Shared design principles</a></li>
+    <li><a href="#mount-motion">§3 Change set A: moving-base mount motion</a></li>
+    <li><a href="#pose-commands">§4 Change set B: topic vs action pose commands</a> <span class="tag tag-new">NEW</span></li>
+    <li><a href="#params">§5 ROS parameters (all new params)</a></li>
+    <li><a href="#behavior">§6 Runtime behavior</a></li>
+    <li><a href="#todo">§7 Not done yet</a></li>
+    <li><a href="#next">§8 Recommended next steps</a></li>
+    <li><a href="#files">§9 File index &amp; diagrams</a></li>
+    <li><a href="#decisions">§10 Conversation decisions (do not re-litigate)</a></li>
+  </ol>
+</nav>
+
+<h2 id="delta">1. Delta from main</h2>
+<p>
+  All work below is <strong>local / uncommitted</strong> on top of <code>origin/main</code>.
+  Two independent features were added in the same working tree. Defaults preserve existing test behavior.
+</p>
+
+<table>
+  <tr>
+    <th>Area</th>
+    <th>On main</th>
+    <th>Branch change</th>
+    <th>Why</th>
+  </tr>
+  <tr>
+    <td><strong>Gravity / bias torques</strong></td>
+    <td class="delta-main">World gravity hardcoded <code>(0,0,-9.81)</code>; inline <code>rnea(q,0,0)</code> in impedance loop.</td>
+    <td><code>MountMotion</code> struct passed into <code>computeControl</code>; gravity rotated into mount frame via IMU orientation; extracted to <code>computeBiasTorques(q,dq,mount)</code>.</td>
+    <td>Arm will mount on an acrobatic humanoid bust. Core math should always run a moving-base path; sensor state is injected externally. Without IMU/odom, defaults match old fixed-base behavior.</td>
+  </tr>
+  <tr>
+    <td><strong>Base motion sensing</strong></td>
+    <td class="delta-main">None — assumed fixed base.</td>
+    <td>Controller subscribes to <code>sensor_msgs/Imu</code> and <code>nav_msgs/Odometry</code>; merges into <code>RealtimeBuffer&lt;MountMotion&gt;</code>.</td>
+    <td>Real robot already publishes IMU + odom. User rejected a custom “base state” message. Spoof node for bench testing is planned externally.</td>
+  </tr>
+  <tr>
+    <td><strong>Pose reference input</strong> <span class="tag tag-new">NEW</span></td>
+    <td class="delta-main">Only <code>FollowCartesianTrajectory</code> action — interpolated waypoints with twist.</td>
+    <td>Runtime-selectable <code>command_source</code>: <code>action</code> (default) <em>or</em> <code>topic</code>. Topic mode subscribes to <code>geometry_msgs/PoseStamped</code> on <code>command_pose</code>.</td>
+    <td>Action interface is good for scripted tests (<code>send_hold</code>, <code>send_offset</code>). Production / streaming teleop needs a lightweight topic, not trajectory actions.</td>
+  </tr>
+  <tr>
+    <td><strong>Test helpers</strong></td>
+    <td class="delta-main"><code>send_hold</code>, <code>send_offset</code> via action only.</td>
+    <td>Added <code>POSE_TOPIC</code>, <code>send_pose()</code>, <code>send_pose_offset()</code> for topic mode testing.</td>
+    <td>Mirror existing action helpers so tests work in either command mode without rewriting scripts.</td>
+  </tr>
+  <tr>
+    <td><strong>Build / deps</strong></td>
+    <td class="delta-main"><code>sensor_msgs</code>, <code>nav_msgs</code> not required.</td>
+    <td><code>CMakeLists.txt</code> / <code>package.xml</code>: added <code>sensor_msgs</code>, <code>nav_msgs</code>, <code>geometry_msgs</code>.</td>
+    <td>New subscriptions for mount motion and pose topic.</td>
+  </tr>
+  <tr>
+    <td><strong>Verification</strong></td>
+    <td class="delta-main">Trajectory tests validated on main.</td>
+    <td>Build <em>not</em> verified in this session (workspace missing <code>cartesian_control_msgs</code> when sourced).</td>
+    <td>User explicitly asked not to attempt a build during topic/action work.</td>
+  </tr>
+</table>
+
+<div class="callout ok">
+  <strong>Backward compatibility:</strong> Default yaml keeps <code>command_source: action</code> and IMU/odom subscriptions are passive with identity/zero defaults — existing gravity and trajectory tests should behave like main until you opt into new modes.
+</div>
+
+<h2 id="principles">2. Shared design principles</h2>
+<ul>
+  <li><strong>No fixed-base branch in core math.</strong> Impedance always receives <code>MountMotion</code>; “fixed base” is achieved by external defaults (no IMU) or a future spoof publisher.</li>
+  <li><strong>Separation of concerns.</strong> Plain C++ structs (<code>MountMotion</code>, <code>PoseCommandRef</code>) in headers; ROS wiring (subs, RT buffers, params) in the controller plugin.</li>
+  <li><strong>Standard ROS messages only.</strong> No custom base-state or pose-command message types.</li>
+  <li><strong>Defaults = old behavior.</strong> No IMU → identity orientation, zero velocity. No topic pose yet → hold FK seed from activation. <code>command_source: action</code> → trajectory path unchanged.</li>
+  <li><strong>Incremental dynamics.</strong> Full acrobatic ID (Coriolis, free-fall cancellation) is explicitly deferred; API and gravity rotation are in place first.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="mount-motion">3. Change set A: moving-base mount motion</h2>
+
+<h3>3.1 Why</h3>
+<p>
+  OpenArm was originally written for a fixed bench mount. The user plans to attach the arm to a
+  humanoid bust that can tumble, with IMU and wheel/leg odom on the bust at a known transform to
+  the arm mount. Full humanoid hardware is not available yet, but the controller should be ready to
+  consume real sensor data when it is.
+</p>
+
+<h3>3.2 What changed (files &amp; API)</h3>
+
+<h4>New file</h4>
+<table>
+  <tr><th>File</th><th>Role</th></tr>
+  <tr>
+    <td><code>include/openarm_cartesian_control/mount_motion.hpp</code></td>
+    <td>
+      <code>MountMotion</code>: orientation, linear/angular velocity, linear/angular acceleration,
+      plus <code>has_imu</code> / <code>has_odom</code> flags.
+    </td>
+  </tr>
+</table>
+
+<h4>Core impedance (<code>cartesian_impedance.hpp</code> / <code>.cpp</code>)</h4>
+<ul>
+  <li><code>computeControl(...)</code> now takes <code>const MountMotion&amp; mount</code> as third argument.</li>
+  <li><code>applyMountGravity(mount)</code>: <code>mount.orientation.conjugate() * (0, 0, -9.81)</code>.</li>
+  <li><code>computeBiasTorques(q, dq, mount)</code>: rotate gravity, then <code>rnea(q, 0, 0)</code> (same as main when orientation is identity).</li>
+  <li>Mount velocity/acceleration fields are accepted but <strong>unused</strong> — reserved for floating-base inverse dynamics.</li>
+</ul>
+
+<pre>
+// main:
+tau += pinocchio::rnea(model, data, q, zero, zero);
+
+// branch:
+tau += computeBiasTorques(q, dq, mount);
+// internally: rotate gravity from mount.orientation, then rnea(q, 0, 0)
+</pre>
+
+<h4>Controller (<code>openarm_cartesian_controller.hpp</code> / <code>.cpp</code>)</h4>
+<ul>
+  <li>Subscribes to IMU and odom in <code>on_configure()</code>.</li>
+  <li><code>RealtimeBuffer&lt;MountMotion&gt;</code> for RT-safe handoff to <code>update()</code>.</li>
+  <li><code>imuCallback</code> / <code>odomCallback</code> merge into buffer (non-RT write).</li>
+  <li><code>readMountMotionFromRT()</code> applies per-sensor defaults when flags are false.</li>
+  <li>Each control cycle: <code>computeControl(q, dq, mount, x_ref_...)</code>.</li>
+</ul>
+
+<h3>3.3 Sensor → MountMotion mapping</h3>
+<table>
+  <tr><th>Source</th><th>Fields written</th><th>Notes</th></tr>
+  <tr>
+    <td>IMU</td>
+    <td>orientation, angular_velocity, linear_acceleration, <code>has_imu=true</code></td>
+    <td>Vectors rotated by <code>imu_to_mount_rotation_</code> from param <code>imu_to_mount_rpy</code></td>
+  </tr>
+  <tr>
+    <td>Odom</td>
+    <td>linear_velocity, <code>has_odom=true</code></td>
+    <td>If IMU not yet received: also uses odom pose orientation and twist.angular</td>
+  </tr>
+  <tr>
+    <td>No IMU yet</td>
+    <td>identity orientation, zero ang vel/accel</td>
+    <td>Fixed-base default</td>
+  </tr>
+  <tr>
+    <td>No odom yet</td>
+    <td>zero linear velocity</td>
+    <td>Fixed-base default</td>
+  </tr>
+</table>
+
+<h3>3.4 Physical picture (future work)</h3>
+<p>
+  In free-fall, gravity is not “turned off.” Base linear acceleration cancels gravitational effects
+  in the mount frame. IMU linear acceleration is <em>specific force</em>:
+  <code>a_meas ≈ a_base − g</code>. On the ground, IMU reads ~+g upward; in free-fall, ~0.
+  Future <code>computeBiasTorques</code> should use this so feedforward goes to zero when weightless.
+</p>
+
+<!-- ============================================================ -->
+<h2 id="pose-commands">4. Change set B: topic vs action pose commands <span class="tag tag-new">NEW</span></h2>
+
+<h3>4.1 Why</h3>
+<p>
+  The existing <code>FollowCartesianTrajectory</code> action is ideal for test scripts that send a
+  single hold waypoint or a short interpolated move. Production teleop and higher-level planners
+  typically stream target poses at control rate over a topic. Both interfaces should coexist; a
+  config flag picks which is active so tests keep working unchanged.
+</p>
+
+<div class="callout">
+  <strong>Mode split:</strong>
+  <ul>
+    <li><code>command_source: action</code> — test harness, trajectory interpolation, action feedback</li>
+    <li><code>command_source: topic</code> — production streaming via <code>geometry_msgs/PoseStamped</code></li>
+  </ul>
+</div>
+
+<h3>4.2 What changed (files &amp; behavior)</h3>
+
+<h4>New file</h4>
+<table>
+  <tr><th>File</th><th>Role</th></tr>
+  <tr>
+    <td><code>include/openarm_cartesian_control/pose_command_ref.hpp</code></td>
+    <td>
+      <code>PoseCommandRef</code>: <code>position</code>, <code>orientation</code>, <code>valid</code> flag.
+      Buffered latest topic command for RT read in <code>update()</code>.
+    </td>
+  </tr>
+</table>
+
+<h4>Controller changes</h4>
+<ul>
+  <li><code>CommandSource</code> enum: <code>ACTION</code> | <code>TOPIC</code>; parsed from param <code>command_source</code>.</li>
+  <li><code>RealtimeBuffer&lt;PoseCommandRef&gt; pose_command_buffer_</code>.</li>
+  <li><code>on_configure()</code>: if <code>topic</code>, create <code>PoseStamped</code> subscription on <code>command_pose_topic</code> (default relative name <code>command_pose</code> → full topic <code>/&lt;controller_ns&gt;/command_pose</code>).</li>
+  <li><code>poseCommandCallback()</code> (non-RT): writes latest pose; normalizes quaternion; sets <code>valid=true</code>.</li>
+  <li><code>update()</code> reference selection:
+    <ul>
+      <li><strong>Action mode:</strong> existing trajectory interpolation (unchanged).</li>
+      <li><strong>Topic mode:</strong> if buffer has <code>valid</code> pose, copy to <code>x_ref_pos_</code> / <code>x_ref_quat_</code>; zero <code>x_ref_linvel_</code> and <code>x_ref_angvel_</code> (hold-pose, no reference motion).</li>
+    </ul>
+  </li>
+  <li><code>onGoalRequest()</code>: rejects trajectory goals when <code>command_source == topic</code> with a warning.</li>
+  <li>Unknown <code>command_source</code> string → warn and fall back to <code>action</code>.</li>
+  <li><strong>No stale-topic timeout.</strong> Before first message, reference stays at FK seed from <code>on_activate()</code> (same hold-in-place behavior as startup on main).</li>
+</ul>
+
+<h4>Config</h4>
+<pre>
+# config/openarm_cartesian_controllers.yaml (both left and right controllers)
+command_source: action          # "action" | "topic"
+command_pose_topic: command_pose
+</pre>
+
+<h4>Test helpers (<code>test/common.sh</code>)</h4>
+<table>
+  <tr><th>Symbol</th><th>Description</th></tr>
+  <tr><td><code>POSE_TOPIC</code></td><td>Defaults to <code>/${CTRL}/command_pose</code></td></tr>
+  <tr><td><code>send_pose px py pz qw qx qy qz</code></td><td>One-shot <code>PoseStamped</code> publish (<code>frame_id: base_link</code>)</td></tr>
+  <tr><td><code>send_pose_offset axis offset</code></td><td>Offset from current TCP (via <code>fk_pose.py</code>), then <code>send_pose</code></td></tr>
+</table>
+<p class="delta-main">
+  Existing <code>send_hold</code> / <code>send_offset</code> still use the action — unchanged for action mode tests.
+</p>
+
+<h3>4.3 Topic-mode usage example</h3>
+<pre>
+# Switch controller to topic mode (runtime or in yaml)
+ros2 param set /left_cartesian_impedance_controller command_source topic
+
+# Publish target pose (or use test helper)
+source test/common.sh
+send_pose 0.4 0.0 0.5 1.0 0.0 0.0 0.0
+# or
+send_pose_offset z 0.05
+</pre>
+
+<h3>4.4 Design decisions (pose commands)</h3>
+<table>
+  <tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr>
+  <tr><td>Message type</td><td><code>geometry_msgs/PoseStamped</code></td><td>Standard, widely supported; no new msg package</td></tr>
+  <tr><td>Topic name</td><td><code>command_pose</code> (relative to controller node)</td><td>Simple, per-arm namespacing via controller manager</td></tr>
+  <tr><td>Reference velocities in topic mode</td><td>Zeroed</td><td>Hold-pose impedance; streaming position targets without twist</td></tr>
+  <tr><td>Default mode</td><td><code>action</code></td><td>Preserves existing test scripts and main-branch behavior</td></tr>
+  <tr><td>Stale command handling</td><td>Hold last valid pose (or FK seed)</td><td>No abrupt stop; teleop can pause publishing</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="params">5. ROS parameters (all new vs main)</h2>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Change set</th><th>Description</th></tr>
+  <tr><td><code>imu_topic</code></td><td><code>imu</code></td><td>A</td><td><code>sensor_msgs/Imu</code> for mount orientation &amp; accel</td></tr>
+  <tr><td><code>odom_topic</code></td><td><code>odom</code></td><td>A</td><td><code>nav_msgs/Odometry</code> for mount linear velocity</td></tr>
+  <tr><td><code>imu_to_mount_rpy</code></td><td><code>[0, 0, 0]</code></td><td>A</td><td>Fixed rotation (rad) from IMU frame to arm mount frame</td></tr>
+  <tr><td><code>command_source</code></td><td><code>action</code></td><td>B</td><td><code>action</code> or <code>topic</code> — selects pose reference input</td></tr>
+  <tr><td><code>command_pose_topic</code></td><td><code>command_pose</code></td><td>B</td><td>Relative topic name for <code>PoseStamped</code> (only used when <code>topic</code>)</td></tr>
+</table>
+
+<h2 id="behavior">6. Runtime behavior</h2>
+
+<h3>6.1 Without any new inputs (matches main)</h3>
+<div class="callout ok">
+  No IMU/odom → identity orientation, zero velocity → gravity stays <code>(0, 0, -9.81)</code>;
+  <code>rnea(q,0,0)</code> unchanged. <code>command_source: action</code> → trajectory tests work as before.
+  Subscriptions are passive — nothing blocks waiting for data.
+</div>
+
+<h3>6.2 With IMU reporting tilt only (change set A)</h3>
+<div class="callout warn">
+  Gravity direction in the arm model rotates with mount orientation (static tilt compensation).
+  Still no Coriolis, centrifugal, or free-fall effects.
+</div>
+
+<h3>6.3 Topic pose commands (change set B)</h3>
+<div class="callout new">
+  With <code>command_source: topic</code>, each new <code>PoseStamped</code> updates the impedance
+  reference immediately. Reference linear/angular velocities are zero — the arm tracks pose with
+  stiffness/damping only (or floats with gravity comp if K/D are zero). Trajectory action goals are rejected.
+</div>
+
+<h3>6.4 Gravity-comp “floaty” feel (unchanged from main)</h3>
+<p>
+  With <code>k_gains</code> and <code>d_gains</code> all zero, the controller applies only gravity-
+  canceling torques plus any Cartesian clamp logic. There is no spring back to reference and no
+  velocity damping — the arm should feel floaty when pushed; it does not actively maintain last
+  velocity, it simply is not resisted once you stop applying external force.
+</p>
+
+<h2 id="todo">7. What is NOT done yet <span class="tag tag-todo">TODO</span></h2>
+<ul>
+  <li>Floating-base Pinocchio model (<code>JointModelFreeFlyer</code> at arm root).</li>
+  <li>Full bias torques via <code>rnea(q, dq, ddq)</code> or <code>nonLinearEffects</code> using mount twist/accel.</li>
+  <li>Free-fall / apparent-gravity using IMU linear acceleration (specific force).</li>
+  <li>In-repo IMU/odom spoof node for fixed-base bench testing (user plans external node).</li>
+  <li>Per-arm calibrated <code>imu_to_mount_rpy</code> once left/right bust mounts are measured.</li>
+  <li>Topic-mode integration tests / production teleop node (helpers exist; no dedicated test script yet).</li>
+  <li>Build verification on a fully sourced workspace (<code>cartesian_control_msgs</code> was missing in session env).</li>
+</ul>
+
+<h2 id="next">8. Recommended next steps</h2>
+<ol>
+  <li>Build and run existing gravity / impedance / trajectory tests with defaults (<code>command_source: action</code>) to confirm no regression.</li>
+  <li>Repeat key tests with <code>command_source: topic</code> using <code>send_pose</code> / <code>send_pose_offset</code>.</li>
+  <li>Add a simple fixed-base spoofer publishing identity IMU + zero odom (optional, can live outside repo).</li>
+  <li>Prepend free flyer to reduced arm model; assemble <code>q/dq/ddq</code> from <code>MountMotion</code> + arm joints.</li>
+  <li>Replace gravity-only <code>rnea(q,0,0)</code> with full ID feedforward; use IMU linear accel for apparent gravity.</li>
+</ol>
+
+<h2 id="files">9. File index &amp; architecture</h2>
+
+<h3>9.1 Key files</h3>
+<pre>
+openarm_cartesian_control/
+├── agent_context/
+│   └── moving_base_mount_motion.html          ← this document
+├── include/openarm_cartesian_control/
+│   ├── mount_motion.hpp                       ← [A] MountMotion struct
+│   ├── pose_command_ref.hpp                   ← [B] PoseCommandRef struct
+│   ├── cartesian_impedance.hpp                ← [A] computeControl + bias torques API
+│   └── openarm_cartesian_controller.hpp       ← [A+B] IMU/odom + pose topic + RT buffers
+├── src/
+│   ├── cartesian_impedance.cpp
+│   └── openarm_cartesian_controller.cpp
+├── config/openarm_cartesian_controllers.yaml  ← [A+B] all new params
+└── test/common.sh                             ← [B] send_pose, send_pose_offset
+</pre>
+
+<h3>9.2 Control loop architecture (combined)</h3>
+<pre>
+  [IMU topic] ──┐
+                ├──► callbacks (non-RT) ──► RealtimeBuffer&lt;MountMotion&gt;
+  [Odom topic] ─┘                                    │
+                                                     │
+  [command_pose] ──► poseCommandCallback ──► RealtimeBuffer&lt;PoseCommandRef&gt;  (topic mode only)
+                                                     │
+  [FollowCartesianTrajectory action] ──► trajectory buffer                      (action mode only)
+                                                     │
+  [joint states] ──► update() ──► readMountMotionFromRT()
+                           │      select x_ref from trajectory | topic | FK seed
+                           ▼
+                CartesianImpedance::computeControl(q, dq, mount, x_ref...)
+                           │
+           ┌───────────────┴───────────────┐
+           ▼                               ▼
+  impedance (Jᵀ F)              computeBiasTorques(mount)
+  stiffness / damping              rotate gravity + rnea(q,0,0)
+           │                               │
+           └───────────────┬───────────────┘
+                           ▼
+                     joint effort commands
+</pre>
+
+<h2 id="decisions">10. Conversation decisions (do not re-litigate)</h2>
+<ul>
+  <li>Rejected custom “base state” ROS message — use IMU + odom directly.</li>
+  <li>Core always takes <code>MountMotion</code>; no separate fixed-base branch inside impedance math.</li>
+  <li>Defaults before sensor data = identity orientation + zero velocity (equivalent to main).</li>
+  <li>Spoof node is external / user-owned for now.</li>
+  <li>Pose commands: keep action path for tests; add topic path for production; default stays <code>action</code>.</li>
+  <li>Pose topic message: <code>geometry_msgs/PoseStamped</code>, not a custom type.</li>
+  <li>Topic mode: zero reference velocities (hold pose), no stale timeout.</li>
+  <li>Do not attempt build unless user asks — env may lack sibling packages.</li>
+</ul>
+
+</body>
+</html>

@@ -29,6 +29,12 @@ left_cartesian_impedance_controller:
       - openarm_left_joint6
       - openarm_left_joint7
     ee_frame_name: openarm_left_hand_tcp
+    imu_topic: imu
+    odom_topic: odom
+    imu_to_mount_rpy: [0.0, 0.0, 0.0]
+    # Pose command interface: "action" (default, for testing) or "topic"
+    command_source: action
+    command_pose_topic: command_pose
     # Stiffness: [x, y, z, rx, ry, rz] — translational (N/m), rotational (Nm/rad)
     k_gains: [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
     # Damping: [x, y, z, rx, ry, rz]
@@ -57,6 +63,12 @@ right_cartesian_impedance_controller:
       - openarm_right_joint6
       - openarm_right_joint7
     ee_frame_name: openarm_right_hand_tcp
+    imu_topic: imu
+    odom_topic: odom
+    imu_to_mount_rpy: [0.0, 0.0, 0.0]
+    # Pose command interface: "action" (default, for testing) or "topic"
+    command_source: action
+    command_pose_topic: command_pose
     # Stiffness: [x, y, z, rx, ry, rz]
     k_gains: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     # Damping: [x, y, z, rx, ry, rz]

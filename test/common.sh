@@ -10,6 +10,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${ARM:=left}"                         # left | right
 : "${CTRL:=${ARM}_cartesian_impedance_controller}"
 : "${ACTION:=/${CTRL}/follow_cartesian_trajectory}"
+: "${POSE_TOPIC:=/${CTRL}/command_pose}"
 : "${GRIPPER:=${ARM}_gripper_controller}"
 
 ACTION_TYPE="cartesian_control_msgs/action/FollowCartesianTrajectory"
@@ -60,6 +61,43 @@ YAML
   echo "Sending goal (hold ${tsec}s):"
   echo "  pos=($px $py $pz) quat=($qw $qx $qy $qz)"
   ros2 action send_goal "$ACTION" "$ACTION_TYPE" "$goal" --feedback
+}
+
+# Publish a single PoseStamped to the command_pose topic (topic mode).
+# args: px py pz qw qx qy qz
+send_pose() {
+  local px=$1 py=$2 pz=$3 qw=$4 qx=$5 qy=$6 qz=$7
+  echo "Publishing pose to ${POSE_TOPIC}:"
+  echo "  pos=($px $py $pz) quat=($qw $qx $qy $qz)"
+  ros2 topic pub --once "$POSE_TOPIC" geometry_msgs/msg/PoseStamped \
+    "{header: {frame_id: 'base_link'}, pose: {position: {x: $px, y: $py, z: $pz}, orientation: {w: $qw, x: $qx, y: $qy, z: $qz}}}"
+}
+
+# Publish pose at current TCP offset along one axis (topic mode).
+# args: axis offset    (axis: x y z rx ry rz; offset m or deg)
+send_pose_offset() {
+  local axis=$1 offset=$2
+  read_pose || return 1
+  python3 - "$axis" "$offset" "$PX" "$PY" "$PZ" "$QW" "$QX" "$QY" "$QZ" <<'PY' > /tmp/_off.$$
+import sys, math
+axis, off = sys.argv[1], float(sys.argv[2])
+px,py,pz,qw,qx,qy,qz = map(float, sys.argv[3:10])
+def qmul(a,b):
+    aw,ax,ay,az=a; bw,bx,by,bz=b
+    return (aw*bw-ax*bx-ay*by-az*bz, aw*bx+ax*bw+ay*bz-az*by,
+            aw*by-ax*bz+ay*bw+az*bx, aw*bz+ax*by-ay*bx+az*bw)
+if axis in ("x","y","z"):
+    d={"x":0,"y":1,"z":2}[axis]; p=[px,py,pz]; p[d]+=off; px,py,pz=p
+elif axis in ("rx","ry","rz"):
+    d={"rx":0,"ry":1,"rz":2}[axis]; h=math.radians(off)/2
+    v=[0,0,0]; v[d]=math.sin(h); dq=(math.cos(h),*v)
+    qw,qx,qy,qz=qmul(dq,(qw,qx,qy,qz))
+else:
+    sys.exit(f"bad axis {axis}")
+print(f"{px:.6f} {py:.6f} {pz:.6f} {qw:.6f} {qx:.6f} {qy:.6f} {qz:.6f}")
+PY
+  read -r npx npy npz nqw nqx nqy nqz < /tmp/_off.$$ ; rm -f /tmp/_off.$$
+  send_pose "$npx" "$npy" "$npz" "$nqw" "$nqx" "$nqy" "$nqz"
 }
 
 # Send a goal at current pose offset along one axis.
