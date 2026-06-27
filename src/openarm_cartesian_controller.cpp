@@ -45,6 +45,7 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_init() {
   try {
     impedance_controller_.emplace(
       urdf_string,
+      joint_names_,
       get_node()->get_parameter("ee_frame_name").as_string(),
       cartesian_position_lower_limits,
       cartesian_position_upper_limits,
@@ -135,6 +136,24 @@ controller_interface::CallbackReturn OpenArmCartesianController::on_deactivate(
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
+controller_interface::CallbackReturn OpenArmCartesianController::on_configure(
+    const rclcpp_lifecycle::State& /* state */) {
+  const std::string action_name =
+    std::string("/") + get_node()->get_name() + "/follow_cartesian_trajectory";
+
+  action_server_ = rclcpp_action::create_server<FollowCartesianTrajectoryAction>(
+      get_node(),
+      action_name,
+      std::bind(&OpenArmCartesianController::onGoalRequest,
+                this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&OpenArmCartesianController::onCancelRequest,
+                this, std::placeholders::_1),
+      std::bind(&OpenArmCartesianController::onGoalAccepted,
+                this, std::placeholders::_1));
+
+  return CallbackReturn::SUCCESS;
+}
+
 // Hardware Interface Configuration
 
 controller_interface::InterfaceConfiguration
@@ -210,7 +229,7 @@ controller_interface::return_type OpenArmCartesianController::update(
   }
 
   // Check for trajectory completion
-  const auto& points = (*trajectory_ptr)->trajectory.points;
+  const auto& points = (*trajectory_ptr)->points;
   const rclcpp::Duration elapsed = time - trajectory_start_time_;
   if (rclcpp::Duration(points.back().time_from_start) <= elapsed) {
     auto result = std::make_shared<FollowCartesianTrajectoryAction::Result>();
@@ -240,9 +259,8 @@ controller_interface::return_type OpenArmCartesianController::update(
 // Trajectory Helpers
 
 void OpenArmCartesianController::interpolateTrajectory(
-    const FollowCartesianTrajectoryAction::Goal& goal,
-    const rclcpp::Time& time) {
-  const auto& points = goal.trajectory.points;
+    const CartesianTrajectory& traj, const rclcpp::Time& time) {
+  const auto& points = traj.points;
   const rclcpp::Duration elapsed = time - trajectory_start_time_;
 
   // Find the last waypoint whose time_from_start <= elapsed
@@ -368,8 +386,21 @@ void OpenArmCartesianController::onGoalAccepted(std::shared_ptr<GoalHandle> goal
     active_goal_->abort(result);
   }
   trajectory_start_time_ = get_node()->get_clock()->now();
-  trajectory_buffer_.writeFromNonRT(goal_handle->get_goal());
   active_goal_ = goal_handle;
+
+  auto traj = std::make_shared<CartesianTrajectory>(goal_handle->get_goal()->trajectory);
+  cartesian_control_msgs::msg::CartesianTrajectoryPoint start_pt;
+  
+  start_pt.pose.position.x    = x_ref_pos_.x();
+  start_pt.pose.position.y    = x_ref_pos_.y();
+  start_pt.pose.position.z    = x_ref_pos_.z();
+  start_pt.pose.orientation.w = x_ref_quat_.w();
+  start_pt.pose.orientation.x = x_ref_quat_.x();
+  start_pt.pose.orientation.y = x_ref_quat_.y();
+  start_pt.pose.orientation.z = x_ref_quat_.z();
+
+  traj->points.insert(traj->points.begin(), start_pt);
+  trajectory_buffer_.writeFromNonRT(traj);
 }
 
 // Parameter Callbacks

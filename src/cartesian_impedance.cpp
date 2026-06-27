@@ -4,6 +4,7 @@
 #include "pinocchio/algorithm/jacobian.hpp"
 #include "pinocchio/algorithm/rnea.hpp"
 #include "pinocchio/algorithm/frames.hpp"
+#include "pinocchio/algorithm/model.hpp"
 
 #include <stdexcept>
 #include <iostream>
@@ -13,6 +14,7 @@ namespace openarm_cartesian_control {
 
 CartesianImpedance::CartesianImpedance(
     const std::string& urdf_string,
+    const std::vector<std::string>& joint_names,
     const std::string& ee_frame_name,
     const std::vector<double>& cartesian_position_lower_limits,
     const std::vector<double>& cartesian_position_upper_limits,
@@ -32,11 +34,37 @@ CartesianImpedance::CartesianImpedance(
     D_(Eigen::Matrix<double, 6, 6>::Zero())
 {
   try {
-    pinocchio::urdf::buildModelFromXML(urdf_string, pinocchio_model_);
+    // Build the full model from URDF (contains every joint: both arms, grippers)
+    pinocchio::Model full_model;
+    pinocchio::urdf::buildModelFromXML(urdf_string, full_model);
+
+    // Lock every movable joint that this controller doesn't command.
+    std::vector<pinocchio::JointIndex> joints_to_lock;
+    for (pinocchio::JointIndex jid = 1;
+         jid < static_cast<pinocchio::JointIndex>(full_model.njoints); ++jid) {
+      const std::string& name = full_model.names[jid];
+      if (std::find(joint_names.begin(), joint_names.end(), name) == joint_names.end()) {
+        joints_to_lock.push_back(jid);
+      }
+    }
+
+    // Sanity check: every requested joint must exist in the URDF.
+    for (const auto& name : joint_names) {
+      if (!full_model.existJointName(name)) {
+        throw std::runtime_error("Joint '" + name + "' not found in URDF");
+      }
+    }
+
+    // Reference configuration for the locked joints (neutral pose).
+    const Eigen::VectorXd q_ref = pinocchio::neutral(full_model);
+
+    // Reduce: locked joints are frozen at q_ref, leaving only joint_names.
+    pinocchio::buildReducedModel(full_model, joints_to_lock, q_ref, pinocchio_model_);
     pinocchio_data_ = pinocchio::Data(pinocchio_model_);
+
     ee_frame_id_ = pinocchio_model_.getFrameId(ee_frame_name);
-    if (ee_frame_id_ == pinocchio_model_.nframes) {
-      throw std::runtime_error("EE frame '" + ee_frame_name + "' not found in URDF");
+    if (ee_frame_id_ == static_cast<pinocchio::FrameIndex>(pinocchio_model_.nframes)) {
+      throw std::runtime_error("EE frame '" + ee_frame_name + "' not found in reduced model");
     }
   } catch (const std::exception& e) {
     throw std::runtime_error(std::string("CartesianImpedance init failed: ") + e.what());

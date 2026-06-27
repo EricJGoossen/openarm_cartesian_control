@@ -73,12 +73,12 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument(
             "right_can_interface",
-            default_value="can0",
+            default_value="can4",
             description="CAN interface for the right arm (e.g. can0).",
         ),
         DeclareLaunchArgument(
             "left_can_interface",
-            default_value="can1",
+            default_value="can5",
             description="CAN interface for the left arm (e.g. can1).",
         ),
         DeclareLaunchArgument(

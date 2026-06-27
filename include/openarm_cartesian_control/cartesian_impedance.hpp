@@ -15,6 +15,7 @@ class CartesianImpedance {
  public:
   CartesianImpedance(
       const std::string& urdf_string,
+      const std::vector<std::string>& joint_names,
       const std::string& ee_frame_name,
       const std::vector<double>& cartesian_position_lower_limits,
       const std::vector<double>& cartesian_position_upper_limits,
@@ -65,10 +66,10 @@ class CartesianImpedance {
   Eigen::Quaterniond last_quat_;
 
   // Helper functions
-void clamp(Eigen::Ref<Eigen::VectorXd> v, const std::vector<double>& limits);
-void clamp(Eigen::Ref<Eigen::VectorXd> v,
-           const std::vector<double>& lower,
-           const std::vector<double>& upper);
+  void clamp(Eigen::Ref<Eigen::VectorXd> v, const std::vector<double>& limits);
+  void clamp(Eigen::Ref<Eigen::VectorXd> v,
+          const std::vector<double>& lower,
+          const std::vector<double>& upper);
 
 };
 

@@ -12,6 +12,7 @@
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/node_interfaces/node_parameters_interface.hpp"
 #include "cartesian_control_msgs/action/follow_cartesian_trajectory.hpp"
+#include "cartesian_control_msgs/msg/cartesian_trajectory.hpp"
 #include "eigen3/Eigen/Core"
 #include "eigen3/Eigen/Geometry"
 
@@ -28,6 +29,7 @@ class OpenArmCartesianController : public controller_interface::ControllerInterf
   controller_interface::CallbackReturn on_init() override;
   controller_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
   controller_interface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
+  controller_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
 
   // RT control loop
   controller_interface::return_type update(
@@ -47,8 +49,8 @@ class OpenArmCartesianController : public controller_interface::ControllerInterf
   std::optional<CartesianImpedance> impedance_controller_;
 
   // Trajectory tracking 
-  realtime_tools::RealtimeBuffer<
-      std::shared_ptr<const FollowCartesianTrajectoryAction::Goal>> trajectory_buffer_;
+  using CartesianTrajectory = cartesian_control_msgs::msg::CartesianTrajectory;
+  realtime_tools::RealtimeBuffer<std::shared_ptr<CartesianTrajectory>> trajectory_buffer_;
   rclcpp::Time trajectory_start_time_;
 
   // Current Cartesian reference 
@@ -56,6 +58,10 @@ class OpenArmCartesianController : public controller_interface::ControllerInterf
   Eigen::Quaterniond x_ref_quat_;
   Eigen::Vector3d    x_ref_linvel_;
   Eigen::Vector3d    x_ref_angvel_;
+
+  // Start Cartesian pose
+  Eigen::Vector3d    x_start_pos_;
+  Eigen::Quaterniond x_start_quat_;
 
   // Action server 
   rclcpp_action::Server<FollowCartesianTrajectoryAction>::SharedPtr action_server_;
@@ -73,7 +79,7 @@ class OpenArmCartesianController : public controller_interface::ControllerInterf
 
   // Helpers 
   void interpolateTrajectory(
-      const FollowCartesianTrajectoryAction::Goal& goal, const rclcpp::Time& time);
+      const CartesianTrajectory& traj, const rclcpp::Time& time);
   void updateFeedback();
 
   rcl_interfaces::msg::SetParametersResult onParameterChange(
